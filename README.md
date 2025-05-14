@@ -3,7 +3,8 @@
 
 `zano_web3` is a TypeScript library for interacting with the ZanoWallet extension in the browser. It allows you to connect to a user's ZanoWallet, handle authentication, and manage wallet credentials.
 
-## Features
+## Features !
+
 
 - **Easy Integration**: Simplifies the process of connecting to the ZanoWallet extension.
 - **Local Storage Support**: Optionally store wallet credentials in local storage.
