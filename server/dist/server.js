@@ -6,10 +6,32 @@ class ServerWallet {
     walletUrl;
     daemonUrl;
     walletAuthToken;
+    enableTransactionLogging;
+    authRequired;
+    transactionLogs = [];
     constructor(params) {
         this.walletUrl = params.walletUrl;
         this.daemonUrl = params.daemonUrl;
-        this.walletAuthToken = params.walletAuthToken || "";
+        this.enableTransactionLogging = params.enableTransactionLogging || false;
+        // Check if authentication is required via environment or parameter
+        this.authRequired = params.authRequired ?? (process.env.ZANO_AUTH_REQUIRED === 'true');
+        // Only set auth token if authentication is required
+        if (this.authRequired) {
+            const token = params.walletAuthToken || process.env.ZANO_WALLET_AUTH_TOKEN;
+            if (!token || token.length === 0) {
+                throw new Error('ZANO_WALLET_AUTH_TOKEN is required when ZANO_AUTH_REQUIRED=true or authRequired=true');
+            }
+            this.walletAuthToken = token;
+        }
+        else {
+            this.walletAuthToken = null;
+        }
+        if (this.enableTransactionLogging) {
+            console.log(`[AUTH] Authentication ${this.authRequired ? 'ENABLED' : 'DISABLED'}`);
+            if (this.authRequired) {
+                console.log(`[AUTH] Using token: ${this.walletAuthToken?.substring(0, 8)}...`);
+            }
+        }
     }
     generateRandomString(length) {
         const bytes = forge.random.getBytesSync(Math.ceil(length / 2));
@@ -44,9 +66,24 @@ class ServerWallet {
             salt: this.generateRandomString(64),
             exp: Math.floor(Date.now() / 1000) + 60, // Expires in 1 minute
         };
-        return this.createJWSToken(payload, this.walletAuthToken);
+        const token = this.createJWSToken(payload, this.walletAuthToken || "");
+        // Debug logging to see what we're sending
+        if (this.enableTransactionLogging) {
+            console.log(`[AUTH_DEBUG] Generated JWT token:`);
+            console.log(`[AUTH_DEBUG] - Payload:`, JSON.stringify(payload, null, 2));
+            console.log(`[AUTH_DEBUG] - Secret length:`, (this.walletAuthToken || "").length);
+            console.log(`[AUTH_DEBUG] - Token (first 50 chars):`, token.substring(0, 50) + '...');
+        }
+        return token;
     }
     async fetchDaemon(method, params) {
+        const startTime = Date.now();
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            method,
+            target: 'daemon',
+            params: this.enableTransactionLogging ? params : '[LOGGING_DISABLED]',
+        };
         const data = {
             jsonrpc: "2.0",
             id: 0,
@@ -55,11 +92,61 @@ class ServerWallet {
         };
         const headers = {
             "Content-Type": "application/json",
-            "Zano-Access-Token": this.generateAccessToken(JSON.stringify(data)),
         };
-        return axios.post(this.daemonUrl, data, { headers });
+        // Daemon uses HTTP Basic Auth (--rpc-login), not JWT
+        if (this.authRequired && this.walletAuthToken) {
+            // For daemon: use HTTP Basic Auth with username:password from --rpc-login
+            const credentials = Buffer.from('zano:zano123').toString('base64');
+            headers["Authorization"] = `Basic ${credentials}`;
+            if (this.enableTransactionLogging) {
+                console.log(`[AUTH] Using HTTP Basic Auth for daemon request`);
+            }
+        }
+        else {
+            if (this.enableTransactionLogging) {
+                console.log(`[AUTH] Making unauthenticated request (auth ${this.authRequired ? 'required but token missing' : 'disabled'})`);
+            }
+        }
+        try {
+            if (this.enableTransactionLogging) {
+                console.log(`[DAEMON] → ${method}:`, JSON.stringify(params, null, 2));
+            }
+            const response = await axios.post(this.daemonUrl, data, { headers });
+            const duration = Date.now() - startTime;
+            logEntry.duration = duration;
+            logEntry.response = this.enableTransactionLogging ? response.data : '[LOGGING_DISABLED]';
+            if (this.enableTransactionLogging) {
+                console.log(`[DAEMON] ← ${method} (${duration}ms):`, JSON.stringify(response.data, null, 2));
+                this.transactionLogs.push(logEntry);
+                // Keep only last 100 log entries to prevent memory issues
+                if (this.transactionLogs.length > 100) {
+                    this.transactionLogs = this.transactionLogs.slice(-100);
+                }
+            }
+            return response;
+        }
+        catch (error) {
+            const duration = Date.now() - startTime;
+            logEntry.duration = duration;
+            logEntry.error = this.enableTransactionLogging ? error.message : '[LOGGING_DISABLED]';
+            if (this.enableTransactionLogging) {
+                console.error(`[DAEMON] ✗ ${method} (${duration}ms):`, error.message);
+                this.transactionLogs.push(logEntry);
+                if (this.transactionLogs.length > 100) {
+                    this.transactionLogs = this.transactionLogs.slice(-100);
+                }
+            }
+            throw error;
+        }
     }
     async fetchWallet(method, params) {
+        const startTime = Date.now();
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            method,
+            target: 'wallet',
+            params: this.enableTransactionLogging ? params : '[LOGGING_DISABLED]',
+        };
         const data = {
             jsonrpc: "2.0",
             id: 0,
@@ -68,9 +155,50 @@ class ServerWallet {
         };
         const headers = {
             "Content-Type": "application/json",
-            "Zano-Access-Token": this.generateAccessToken(JSON.stringify(data)),
         };
-        return axios.post(this.walletUrl, data, { headers });
+        // Wallet uses JWT authentication (Zano-Access-Token)
+        if (this.authRequired && this.walletAuthToken) {
+            headers["Zano-Access-Token"] = this.generateAccessToken(JSON.stringify(data));
+            if (this.enableTransactionLogging) {
+                console.log(`[AUTH] Using JWT authentication for wallet request`);
+            }
+        }
+        else {
+            if (this.enableTransactionLogging) {
+                console.log(`[AUTH] Making unauthenticated wallet request (auth ${this.authRequired ? 'required but token missing' : 'disabled'})`);
+            }
+        }
+        try {
+            if (this.enableTransactionLogging) {
+                console.log(`[WALLET] → ${method}:`, JSON.stringify(params, null, 2));
+            }
+            const response = await axios.post(this.walletUrl, data, { headers });
+            const duration = Date.now() - startTime;
+            logEntry.duration = duration;
+            logEntry.response = this.enableTransactionLogging ? response.data : '[LOGGING_DISABLED]';
+            if (this.enableTransactionLogging) {
+                console.log(`[WALLET] ← ${method} (${duration}ms):`, JSON.stringify(response.data, null, 2));
+                this.transactionLogs.push(logEntry);
+                // Keep only last 100 log entries to prevent memory issues
+                if (this.transactionLogs.length > 100) {
+                    this.transactionLogs = this.transactionLogs.slice(-100);
+                }
+            }
+            return response;
+        }
+        catch (error) {
+            const duration = Date.now() - startTime;
+            logEntry.duration = duration;
+            logEntry.error = this.enableTransactionLogging ? error.message : '[LOGGING_DISABLED]';
+            if (this.enableTransactionLogging) {
+                console.error(`[WALLET] ✗ ${method} (${duration}ms):`, error.message);
+                this.transactionLogs.push(logEntry);
+                if (this.transactionLogs.length > 100) {
+                    this.transactionLogs = this.transactionLogs.slice(-100);
+                }
+            }
+            throw error;
+        }
     }
     async updateWalletRpcUrl(rpcUrl) {
         this.walletUrl = rpcUrl;
@@ -276,6 +404,111 @@ class ServerWallet {
         }
         catch {
             throw new ZanoError("Failed to fetch alias", "ALIAS_FETCH_ERROR");
+        }
+    }
+    // Transaction logging utility methods
+    enableLogging() {
+        this.enableTransactionLogging = true;
+        console.log('[ZANO] Transaction logging enabled');
+    }
+    disableLogging() {
+        this.enableTransactionLogging = false;
+        console.log('[ZANO] Transaction logging disabled');
+    }
+    getTransactionLogs(limit) {
+        if (!this.enableTransactionLogging) {
+            return [];
+        }
+        const logs = this.transactionLogs;
+        return limit ? logs.slice(-limit) : logs;
+    }
+    getTransactionLogsByMethod(method) {
+        if (!this.enableTransactionLogging) {
+            return [];
+        }
+        return this.transactionLogs.filter(log => log.method === method);
+    }
+    getTransactionLogsByTarget(target) {
+        if (!this.enableTransactionLogging) {
+            return [];
+        }
+        return this.transactionLogs.filter(log => log.target === target);
+    }
+    clearTransactionLogs() {
+        this.transactionLogs = [];
+        console.log('[ZANO] Transaction logs cleared');
+    }
+    // Enhanced transfer method with detailed transaction logging
+    async sendTransferWithLogging(assetId, address, amount, comment) {
+        if (this.enableTransactionLogging) {
+            console.log(`[TRANSACTION] Starting transfer of ${amount} (asset: ${assetId}) to ${address}`);
+            if (comment) {
+                console.log(`[TRANSACTION] Comment: ${comment}`);
+            }
+        }
+        try {
+            const result = await this.sendTransfer(assetId, address, amount);
+            if (this.enableTransactionLogging && result.tx_hash) {
+                console.log(`[TRANSACTION] ✓ Transfer successful - TX Hash: ${result.tx_hash}`);
+                // Get transaction details from daemon for verification
+                setTimeout(async () => {
+                    try {
+                        await this.getTransactionDetails(result.tx_hash);
+                    }
+                    catch (error) {
+                        console.log(`[TRANSACTION] Could not fetch transaction details yet for ${result.tx_hash}`);
+                    }
+                }, 2000);
+            }
+            return result;
+        }
+        catch (error) {
+            if (this.enableTransactionLogging) {
+                console.error(`[TRANSACTION] ✗ Transfer failed:`, error);
+            }
+            throw error;
+        }
+    }
+    // Get transaction details from daemon
+    async getTransactionDetails(txHash) {
+        try {
+            const response = await this.fetchDaemon("get_transactions", {
+                txs_hashes: [txHash]
+            });
+            if (response.data.result && response.data.result.txs) {
+                const tx = response.data.result.txs[0];
+                if (this.enableTransactionLogging) {
+                    console.log(`[TX_DETAILS] Transaction ${txHash}:`);
+                    console.log(`  - Block Height: ${tx.block_height || 'pending'}`);
+                    console.log(`  - Confirmations: ${tx.confirmations || 0}`);
+                    console.log(`  - Status: ${tx.in_pool ? 'in mempool' : 'confirmed'}`);
+                }
+                return tx;
+            }
+            throw new Error('Transaction not found');
+        }
+        catch (error) {
+            if (this.enableTransactionLogging) {
+                console.log(`[TX_DETAILS] Could not get details for ${txHash}: ${error.message}`);
+            }
+            throw error;
+        }
+    }
+    // Get mempool stats from daemon
+    async getMempoolStats() {
+        try {
+            const response = await this.fetchDaemon("get_transaction_pool_stats", {});
+            if (this.enableTransactionLogging && response.data.result) {
+                const stats = response.data.result.pool_stats;
+                console.log(`[MEMPOOL] ${stats.txs_total} transactions, size: ${stats.bytes_total} bytes`);
+            }
+            return response.data.result;
+        }
+        catch (error) {
+            if (this.enableTransactionLogging) {
+                console.error(`[MEMPOOL] Error getting mempool stats: ${error.message}`);
+            }
+            throw error;
         }
     }
 }

@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Wallet } from './types';
+import { Wallet, Asset } from './types';
 
 export interface ZanoWalletParams {
     authPath: string;
@@ -22,10 +22,15 @@ type GlobalWindow = Window & typeof globalThis;
 
 interface ZanoWindowParams {
     request: (str: string, params?: any, timeoutMs?: number | null) => Promise<any>;
+    getAlias?: () => Promise<string | null>;
+    getAddress?: () => Promise<string | null>;
+    getBalance?: () => Promise<string | null>;
+    getAssets?: () => Promise<Asset[] | null>;
 }
 
 type ZanoWindow = Omit<GlobalWindow, 'Infinity'> & {
-    zano: ZanoWindowParams
+    zano: ZanoWindowParams,
+    zanoWallet: ZanoWindowParams
 }
 
 interface WalletCredentials {
@@ -49,12 +54,15 @@ class ZanoWallet {
             throw new Error('ZanoWallet can only be used in the browser');
         }
 
-        if (!((window as unknown) as ZanoWindow).zano) {
+        const globalWindow = (window as unknown) as ZanoWindow;
+        const walletApi = globalWindow.zano || globalWindow.zanoWallet;
+
+        if (!walletApi) {
             console.error('ZanoWallet requires the ZanoWallet extension to be installed');
         }
 
         this.params = params;
-        this.zanoWallet = ((window as unknown) as ZanoWindow).zano;
+        this.zanoWallet = walletApi;
         this.localStorageKey = params.customLocalStorageKey || this.DEFAULT_LOCAL_STORAGE_KEY;
     }
     
@@ -99,7 +107,7 @@ class ZanoWallet {
             this.params.onConnectStart();
         }
 
-        const walletData = (await ((window as unknown) as ZanoWindow).zano.request('GET_WALLET_DATA')).data;
+        const walletData = (await this.zanoWallet.request('GET_WALLET_DATA')).data;
 
 
         if (!walletData?.address) {
@@ -203,8 +211,68 @@ class ZanoWallet {
         return true;
     }
     
-    async getWallet() {
-        return (await this.zanoWallet.request('GET_WALLET_DATA'))?.data as Wallet;
+    async getWallet(): Promise<Wallet | null> {
+        if (!this.zanoWallet) return null;
+        // Try GET_WALLET_DATA first
+        if (this.zanoWallet.request) {
+            try {
+                const walletData = await this.zanoWallet.request('GET_WALLET_DATA');
+                if (walletData?.data) {
+                    const data = walletData.data;
+                    // If alias is missing, try to get it directly
+                    if (!data.alias && this.zanoWallet.getAlias) {
+                        try {
+                            const alias = await this.zanoWallet.getAlias();
+                            if (alias) {
+                                data.alias = alias;
+                            }
+                        } catch (e) {
+                            console.error('Error calling getAlias:', e);
+                        }
+                    }
+                    return data as Wallet;
+                }
+            } catch (e) {
+                console.error('Error getting wallet data via request:', e);
+            }
+        }
+
+        // Fallback to legacy methods
+        try {
+            let address;
+            let balance = '0';
+            let assets: Asset[] = [];
+            let alias = '';
+            
+            if (this.zanoWallet.getAddress) {
+                address = await this.zanoWallet.getAddress();
+            }
+
+            if (!address) {
+                return null;
+            }
+
+            if (this.zanoWallet.getBalance) {
+                balance = (await this.zanoWallet.getBalance()) || '0';
+            }
+            if (this.zanoWallet.getAssets) {
+                assets = (await this.zanoWallet.getAssets()) || [];
+            }
+            if (this.zanoWallet.getAlias) {
+                alias = (await this.zanoWallet.getAlias()) || '';
+            }
+
+            return {
+                address,
+                balance,
+                assets,
+                alias,
+            } as Wallet;
+
+        } catch (err) {
+            console.error('Error accessing wallet with fallback methods:', err);
+            return null;
+        }
     }
 
     async getAddressByAlias(alias: string) {

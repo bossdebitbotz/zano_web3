@@ -1,9 +1,11 @@
 import { AuthData, BalanceInfo, TxInfo, AliasDetails } from "./types";
 import { APIAsset } from "./types";
-interface ConstructorParams {
+export interface ConstructorParams {
     walletUrl: string;
     daemonUrl: string;
     walletAuthToken?: string;
+    enableTransactionLogging?: boolean;
+    authRequired?: boolean;
 }
 interface GetTxsParams {
     count: number;
@@ -13,10 +15,22 @@ interface GetTxsParams {
     order?: string;
     update_provision_info?: boolean;
 }
+export interface TransactionLogEntry {
+    timestamp: string;
+    method: string;
+    target: 'daemon' | 'wallet';
+    params: any;
+    response?: any;
+    error?: any;
+    duration?: number;
+}
 declare class ServerWallet {
     private walletUrl;
     private daemonUrl;
     private walletAuthToken;
+    private enableTransactionLogging;
+    private authRequired;
+    private transactionLogs;
     constructor(params: ConstructorParams);
     private generateRandomString;
     private createJWSToken;
@@ -34,5 +48,14 @@ declare class ServerWallet {
     validateWallet(authData: AuthData): Promise<boolean>;
     getTxs(params: GetTxsParams): Promise<TxInfo>;
     getAliasDetails(alias: string): Promise<AliasDetails>;
+    enableLogging(): void;
+    disableLogging(): void;
+    getTransactionLogs(limit?: number): TransactionLogEntry[];
+    getTransactionLogsByMethod(method: string): TransactionLogEntry[];
+    getTransactionLogsByTarget(target: 'daemon' | 'wallet'): TransactionLogEntry[];
+    clearTransactionLogs(): void;
+    sendTransferWithLogging(assetId: string, address: string, amount: string, comment?: string): Promise<any>;
+    getTransactionDetails(txHash: string): Promise<any>;
+    getMempoolStats(): Promise<any>;
 }
 export default ServerWallet;
