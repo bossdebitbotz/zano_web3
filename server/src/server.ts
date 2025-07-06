@@ -78,7 +78,8 @@ class ServerWallet {
     if (this.enableTransactionLogging) {
       console.log(`[AUTH] Authentication ${this.authRequired ? 'ENABLED' : 'DISABLED'}`);
       if (this.authRequired) {
-        console.log(`[AUTH] Using token: ${this.walletAuthToken?.substring(0, 8)}...`);
+        // SECURITY: Don't log actual token, just confirm it exists
+        console.log(`[AUTH] Token configured: ${this.walletAuthToken ? 'YES' : 'NO'} (length: ${this.walletAuthToken?.length || 0})`);
       }
     }
   }
@@ -127,10 +128,12 @@ class ServerWallet {
     
     // Debug logging to see what we're sending
     if (this.enableTransactionLogging) {
-      console.log(`[AUTH_DEBUG] Generated JWT token:`);
-      console.log(`[AUTH_DEBUG] - Payload:`, JSON.stringify(payload, null, 2));
-      console.log(`[AUTH_DEBUG] - Secret length:`, (this.walletAuthToken || "").length);
-      console.log(`[AUTH_DEBUG] - Token (first 50 chars):`, token.substring(0, 50) + '...');
+      console.log(`[AUTH_DEBUG] JWT token generation:`);
+      console.log(`[AUTH_DEBUG] - Payload exp:`, payload.exp);
+      console.log(`[AUTH_DEBUG] - Payload user:`, payload.user);
+      console.log(`[AUTH_DEBUG] - Secret configured:`, !!(this.walletAuthToken || ""));
+      // SECURITY: Never log actual tokens or secrets
+      console.log(`[AUTH_DEBUG] - Token generated successfully`);
     }
   
     return token;
@@ -159,11 +162,13 @@ class ServerWallet {
 
     // Daemon uses HTTP Basic Auth (--rpc-login), not JWT
     if (this.authRequired && this.walletAuthToken) {
-      // For daemon: use HTTP Basic Auth with username:password from --rpc-login
-      const credentials = Buffer.from('zano:zano123').toString('base64');
+      // SECURITY: Use environment variables for RPC credentials instead of hardcoded values
+      const rpcUsername = process.env.ZANO_RPC_USERNAME || 'admin';
+      const rpcPassword = process.env.ZANO_RPC_PASSWORD || 'admin';
+      const credentials = Buffer.from(`${rpcUsername}:${rpcPassword}`).toString('base64');
       headers["Authorization"] = `Basic ${credentials}`;
       if (this.enableTransactionLogging) {
-        console.log(`[AUTH] Using HTTP Basic Auth for daemon request`);
+        console.log(`[AUTH] Using HTTP Basic Auth for daemon request with user: ${rpcUsername}`);
       }
     } else {
       if (this.enableTransactionLogging) {

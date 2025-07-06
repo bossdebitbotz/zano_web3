@@ -95,11 +95,13 @@ class ServerWallet {
         };
         // Daemon uses HTTP Basic Auth (--rpc-login), not JWT
         if (this.authRequired && this.walletAuthToken) {
-            // For daemon: use HTTP Basic Auth with username:password from --rpc-login
-            const credentials = Buffer.from('zano:zano123').toString('base64');
+            // SECURITY: Use environment variables for RPC credentials instead of hardcoded values
+            const rpcUsername = process.env.ZANO_RPC_USERNAME || 'admin';
+            const rpcPassword = process.env.ZANO_RPC_PASSWORD || 'admin';
+            const credentials = Buffer.from(`${rpcUsername}:${rpcPassword}`).toString('base64');
             headers["Authorization"] = `Basic ${credentials}`;
             if (this.enableTransactionLogging) {
-                console.log(`[AUTH] Using HTTP Basic Auth for daemon request`);
+                console.log(`[AUTH] Using HTTP Basic Auth for daemon request with user: ${rpcUsername}`);
             }
         }
         else {
